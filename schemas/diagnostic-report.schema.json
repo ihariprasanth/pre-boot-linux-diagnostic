@@ -1,0 +1,829 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pldds.local/schemas/diagnostic-report.schema.json",
+  "title": "PLDDS Diagnostic Report",
+  "description": "The JSON report produced by the diagnostic agent (diagnostic/agent) at the end of a boot session. Field names and nesting mirror the agent's Rust structs exactly \u2014 see result.rs, report.rs, and collectors/*.rs. The backend (Phase 5) validates every submitted report against this schema before storing it.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "report_id",
+    "boot_id",
+    "agent_version",
+    "generated_at",
+    "device",
+    "summary",
+    "sections"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Version of this schema the report was produced against, e.g. \"1.0\". The backend rejects reports whose major version it doesn't understand.",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "report_id": {
+      "type": "string",
+      "description": "Unique identifier for this specific report submission. Used for idempotency/replay protection on the backend (see docs/architecture.md \"Security model\")."
+    },
+    "boot_id": {
+      "type": "string",
+      "description": "Identifier stable for the lifetime of the current boot (sourced from the kernel's own per-boot random UUID), distinct from report_id. Lets the backend correlate multiple reports/events from the same boot session."
+    },
+    "agent_version": {
+      "type": "string",
+      "description": "diagnostic-agent binary version (Cargo package version) that produced this report."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp the report was assembled, RFC 3339."
+    },
+    "device": {
+      "$ref": "#/$defs/device_identity"
+    },
+    "summary": {
+      "$ref": "#/$defs/summary"
+    },
+    "sections": {
+      "$ref": "#/$defs/sections"
+    }
+  },
+  "$defs": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "WARN",
+        "FAIL",
+        "SKIPPED",
+        "UNKNOWN"
+      ],
+      "description": "Mirrors result::Status."
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "INFO",
+        "WARNING",
+        "ERROR",
+        "CRITICAL"
+      ],
+      "description": "Mirrors result::Severity."
+    },
+    "diagnostic_result": {
+      "type": "object",
+      "description": "Mirrors result::DiagnosticResult. Emitted one-or-more times per collector.",
+      "required": [
+        "test",
+        "component",
+        "status",
+        "severity",
+        "message",
+        "duration_ms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "test": {
+          "type": "string",
+          "description": "Stable machine-readable test id, e.g. \"cpu_thermal\"."
+        },
+        "component": {
+          "type": "string",
+          "description": "Which collector emitted this, e.g. \"cpu\", \"memory\", \"kernel\", \"pci\", \"storage\"."
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "severity": {
+          "$ref": "#/$defs/severity"
+        },
+        "message": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "device_identity": {
+      "type": "object",
+      "description": "Mirrors report::DeviceIdentity. NOTE: as of Phase 4 device_id is an unprovisioned placeholder \u2014 Phase 7 replaces it with the privacy-conscious hashed identity described in docs/architecture.md \"Security model\" and this schema's device_id description will be updated in the same change.",
+      "required": [
+        "device_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "device_id": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Mirrors report::Summary \u2014 aggregate counts and health score across every section's results.",
+      "required": [
+        "total",
+        "passed",
+        "warned",
+        "failed",
+        "skipped",
+        "score",
+        "score_label"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "score_label": {
+          "type": "string",
+          "enum": [
+            "GOOD",
+            "WARNING",
+            "POOR",
+            "CRITICAL"
+          ]
+        }
+      }
+    },
+    "cpu_info": {
+      "type": "object",
+      "description": "Mirrors collectors::cpu::CpuInfo.",
+      "required": [
+        "architecture",
+        "online_cpus",
+        "offline_cpus",
+        "flags"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vendor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "architecture": {
+          "type": "string"
+        },
+        "physical_cores": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "logical_threads": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "online_cpus": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "offline_cpus": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "current_freq_mhz": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "max_freq_mhz": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "governor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "temperature_celsius": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "memory_info": {
+      "type": "object",
+      "description": "Mirrors collectors::memory::MemoryInfo. Informational only \u2014 not the result of an active memory test.",
+      "required": [
+        "memory_online_blocks",
+        "memory_offline_blocks"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "total_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "available_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "free_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "swap_total_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "swap_free_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "memory_online_blocks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "memory_offline_blocks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ecc": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "null means undetermined, never \"no ECC\"."
+        }
+      }
+    },
+    "kernel_log_entry": {
+      "type": "object",
+      "description": "Mirrors collectors::kernel::KernelLogEntry.",
+      "required": [
+        "severity",
+        "line"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "$ref": "#/$defs/severity"
+        },
+        "line": {
+          "type": "string"
+        }
+      }
+    },
+    "kernel_info": {
+      "type": "object",
+      "description": "Mirrors collectors::kernel::KernelInfo.",
+      "required": [
+        "tainted",
+        "log_entries"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cmdline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tainted": {
+          "type": "boolean"
+        },
+        "taint_code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "log_entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/kernel_log_entry"
+          }
+        }
+      }
+    },
+    "pci_device": {
+      "type": "object",
+      "description": "Mirrors collectors::pci::PciDevice. Read-only enumeration from /sys/bus/pci/devices.",
+      "required": [
+        "address"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "vendor_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "driver": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "link_speed": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "storage_device": {
+      "type": "object",
+      "description": "Mirrors collectors::storage::StorageDevice. Read-only enumeration from /sys/block.",
+      "required": [
+        "name",
+        "removable",
+        "is_nvme"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "removable": {
+          "type": "boolean"
+        },
+        "is_nvme": {
+          "type": "boolean"
+        },
+        "smart_healthy": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "null means not determined, never \"healthy\"."
+        }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "description": "Mirrors report::Sections \u2014 Phase 3 collectors (cpu/memory/kernel/pci/storage) plus Phase 8 collectors (gpu/usb/network/sensors).",
+      "required": [
+        "cpu",
+        "memory",
+        "kernel",
+        "pci",
+        "storage",
+        "gpu",
+        "usb",
+        "network",
+        "sensors"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "type": "object",
+          "required": [
+            "info",
+            "results"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "info": {
+              "$ref": "#/$defs/cpu_info"
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/diagnostic_result"
+              }
+            }
+          }
+        },
+        "memory": {
+          "type": "object",
+          "required": [
+            "info",
+            "results"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "info": {
+              "$ref": "#/$defs/memory_info"
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/diagnostic_result"
+              }
+            }
+          }
+        },
+        "kernel": {
+          "type": "object",
+          "required": [
+            "info",
+            "results"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "info": {
+              "$ref": "#/$defs/kernel_info"
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/diagnostic_result"
+              }
+            }
+          }
+        },
+        "pci": {
+          "type": "object",
+          "required": [
+            "info",
+            "results"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "info": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pci_device"
+              }
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/diagnostic_result"
+              }
+            }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "required": [
+            "info",
+            "results"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "info": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/storage_device"
+              }
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/diagnostic_result"
+              }
+            }
+          }
+        },
+        "gpu": {
+          "type": "object",
+          "required": [
+            "info",
+            "results"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "info": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/gpu_device"
+              }
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/diagnostic_result"
+              }
+            }
+          }
+        },
+        "usb": {
+          "type": "object",
+          "required": [
+            "info",
+            "results"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "info": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/usb_device"
+              }
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/diagnostic_result"
+              }
+            }
+          }
+        },
+        "network": {
+          "type": "object",
+          "required": [
+            "info",
+            "results"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "info": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/network_interface"
+              }
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/diagnostic_result"
+              }
+            }
+          }
+        },
+        "sensors": {
+          "type": "object",
+          "required": [
+            "info",
+            "results"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "info": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sensor_reading"
+              }
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/diagnostic_result"
+              }
+            }
+          }
+        }
+      }
+    },
+    "gpu_device": {
+      "type": "object",
+      "description": "Mirrors collectors::gpu::GpuDevice. Read-only enumeration from /sys/class/drm.",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "vendor_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "driver": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "temperature_celsius": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "usb_device": {
+      "type": "object",
+      "description": "Mirrors collectors::usb::UsbDevice. Read-only enumeration from /sys/bus/usb/devices.",
+      "required": [
+        "bus_path"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "bus_path": {
+          "type": "string"
+        },
+        "vendor_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "product_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "manufacturer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "speed_mbps": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "network_interface": {
+      "type": "object",
+      "description": "Mirrors collectors::network::NetworkInterface. Read-only enumeration from /sys/class/net (loopback excluded).",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "oper_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "carrier": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mac_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "speed_mbps": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "is_wireless": {
+          "type": "boolean"
+        }
+      }
+    },
+    "sensor_reading": {
+      "type": "object",
+      "description": "Mirrors collectors::sensors::SensorReading. Read-only enumeration from /sys/class/hwmon.",
+      "required": [
+        "chip",
+        "label",
+        "kind",
+        "value",
+        "unit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "chip": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "TEMPERATURE",
+            "FAN",
+            "VOLTAGE"
+          ]
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+[package]
+name = "diagnostic-agent"
+version = "0.3.0"
+edition = "2021"
+description = "PLDDS pre-boot hardware/kernel diagnostic agent"
+
+# Phase 4: serde/serde_json for the JSON report + chrono (clock-only,
+# no default features) for RFC3339 timestamps. Everything else is
+# still std-only.
+# Phase 6: reqwest (blocking, rustls-tls) for uploading reports over
+# HTTP/HTTPS.
+# Phase 7: ed25519-dalek + rand_core for device keypair + request
+# signing, sha2 for the privacy-conscious hashed device_id, base64 +
+# hex for wire encoding.
+# Phase 9: no new dependencies — bootdecision.rs is std-only on
+# purpose (it writes one small plain-text file; /init, not this
+# crate, is what shells out to grub-reboot).
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Explicit direct dependency (not just transitive via reqwest): reqwest's
+# rustls-tls backend needs a process-level crypto provider installed
+# before the first TLS client is built, or `Client::builder().build()`
+# fails immediately with a "builder error" and never even attempts a
+# connection. main.rs calls rustls::crypto::ring::default_provider()
+# .install_default() once at startup to satisfy this.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+[profile.release]
+opt-level = "z"   # optimize for binary size — this runs from a RAM-resident initramfs
+lto = true
+strip = true
+panic = "abort"   # no unwinding needed for a one-shot boot-time process

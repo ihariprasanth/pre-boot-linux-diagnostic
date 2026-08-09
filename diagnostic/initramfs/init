@@ -1,0 +1,184 @@
+#!/bin/sh
+# PLDDS diagnostic environment — PID 1 init script.
+#
+# Phase 9 scope: run the diagnostic agent, then read the boot decision
+# it wrote and perform the GRUB / Windows handoff. This is the ONLY
+# place in the whole system that ever calls `grub-reboot`, and it
+# never calls anything else GRUB-related (never `grub-set-default`,
+# never writes to the EFI System Partition, never touches a Windows
+# file). See docs/boot-flow.md "Phase 9" and docs/architecture.md
+# "Core safety invariant" for the full reasoning.
+#
+# This script intentionally does nothing destructive: it never mounts,
+# writes to, or otherwise touches any disk device other than issuing
+# the one-shot `grub-reboot` command (which itself only rewrites a
+# small GRUB environment block, never a partition table or Windows
+# file) before rebooting.
+
+set -e
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+# Local-log mode (default): the agent writes the diagnostic report
+# straight onto the Windows C: partition (see
+# diagnostic/agent/src/localsave.rs) — C:\PLDDS\Logs\<report>.json —
+# and never touches the network. A separate Windows-side tool, built
+# later, is expected to read that folder and transmit the logs on its
+# own schedule. Set PLDDS_LOCAL_LOG_ONLY=0 (and PLDDS_SERVER_URL) below
+# to go back to the network-upload path instead.
+export PLDDS_LOCAL_LOG_ONLY=1
+# export PLDDS_SERVER_URL=https://pre-boot-linux-diagnostic.onrender.com
+# export PLDDS_REQUIRE_TLS=1
+
+# --- Core virtual filesystems -------------------------------------------
+mount -t proc     none /proc
+mount -t sysfs    none /sys
+mount -t devtmpfs none /dev 2>/dev/null || true
+
+if [ ! -e /dev/console ]; then
+    mknod -m 600 /dev/console c 5 1 2>/dev/null || true
+fi
+if [ ! -e /dev/null ]; then
+    mknod -m 666 /dev/null c 1 3 2>/dev/null || true
+fi
+
+# --- Banner ---------------------------------------------------------------
+clear 2>/dev/null || true
+cat <<'BANNER'
+
+============================================================
+  PLDDS Diagnostic Environment Started
+  Pre-Boot Linux Deep Diagnostic System
+============================================================
+
+  Phase 9: hardware diagnostics + GRUB/Windows handoff
+
+BANNER
+
+echo "[init] kernel:       $(uname -r)"
+echo "[init] architecture: $(uname -m)"
+echo "[init] uptime since kernel handoff:"
+cat /proc/uptime 2>/dev/null || echo "  (unavailable)"
+echo ""
+
+# --- Networking (Phase 10) ---------------------------------------------
+# Best-effort DHCP so the agent's upload step (Phase 6/7) has a shot at
+# reaching the backend. Deliberately non-fatal at every step: a
+# diagnostic environment that can't get an IP address must still run
+# its read-only collectors, write its report to /run, and reach the
+# boot decision below (which — see bootdecision.rs — treats a failed
+# upload as "retry, then boot Windows anyway", never as fatal).
+#
+# eth0 is what virtio-net/e1000/rtl8139 all normally enumerate as when
+# there's exactly one NIC, which is what scripts/run-qemu.sh attaches
+# for the Phase 10 test harness. On hardware with a different/no NIC
+# name this whole block just times out and logs a message — no retry
+# loop, no hang beyond udhcpc's own bounded attempt count below.
+if [ -e /sys/class/net/eth0 ]; then
+    ip link set eth0 up 2>/dev/null || true
+    echo "[init] requesting DHCP lease on eth0..."
+    udhcpc -i eth0 -n -q -t 3 -s /etc/udhcpc.script >/dev/null 2>&1 \
+        && echo "[init] eth0: $(ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}')" \
+        || echo "[init] no DHCP lease on eth0 (non-fatal — upload will fail gracefully, see bootdecision.rs)"
+else
+    echo "[init] no eth0 present — skipping network bring-up (non-fatal)"
+fi
+echo ""
+
+# --- Diagnostic agent -------------------------------------------------
+# Agent runs the collectors, builds + uploads the report, and writes
+# its boot decision to $DECISION_FILE. Its own exit code (0/1/2) is
+# kept only as a secondary signal in case the decision file can't be
+# read for some reason — see the fallback logic below.
+AGENT_EXIT=0
+if [ -x /bin/diagnostic-agent ]; then
+    /bin/diagnostic-agent || AGENT_EXIT=$?
+else
+    echo "[init] diagnostic-agent not present in this initramfs build"
+    AGENT_EXIT=99
+fi
+echo ""
+
+# --- Boot decision + GRUB handoff (Phase 9) --------------------------
+DECISION_FILE=/run/pldds-boot-decision
+ACTION=""
+REASON=""
+
+if [ -f "$DECISION_FILE" ]; then
+    # Plain KEY=value lines (see bootdecision.rs::write_decision) —
+    # `.` sources them as shell variable assignments. This is exactly
+    # why that file format was chosen: no JSON parser needed in PID 1.
+    . "$DECISION_FILE" 2>/dev/null || true
+fi
+
+# Fail-safe: if the decision file is missing, empty, or contains an
+# ACTION we don't recognize, always default to WINDOWS. A confused or
+# absent decision must never be interpreted as "retry" — that's the
+# one direction that can loop.
+case "$ACTION" in
+    WINDOWS|RETRY_DIAGNOSTIC) ;;
+    *)
+        echo "[init] no usable boot decision found (agent exit code: $AGENT_EXIT) — defaulting to WINDOWS (fail-safe)"
+        ACTION="WINDOWS"
+        REASON="fail-safe default: decision file missing or unreadable"
+        ;;
+esac
+
+echo "[init] boot decision: $ACTION"
+echo "[init] reason:        $REASON"
+
+# grub-reboot only exists on a real installed system with a GRUB
+# environment block (grubenv) present — never inside this test
+# initramfs itself. If it's missing, GRUB's own *persistent* default
+# is still Windows per the core safety invariant, so a plain `reboot`
+# lands on Windows regardless — we simply skip the one-shot override
+# rather than fail.
+GRUB_REBOOT_BIN=""
+for candidate in grub-reboot grub2-reboot; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        GRUB_REBOOT_BIN="$candidate"
+        break
+    fi
+done
+
+if [ "$ACTION" = "RETRY_DIAGNOSTIC" ] && [ -z "$GRUB_REBOOT_BIN" ]; then
+    # Never retry without a confirmed working grub-reboot — an
+    # unconfirmed retry with no way to schedule it is indistinguishable
+    # from "just boot Windows" anyway, and treating it as WINDOWS here
+    # is what makes RETRY_DIAGNOSTIC provably unable to loop forever
+    # (see bootdecision.rs module docs).
+    echo "[init] grub-reboot not available — cannot honor RETRY_DIAGNOSTIC, falling back to WINDOWS"
+    ACTION="WINDOWS"
+fi
+
+if [ -n "$GRUB_REBOOT_BIN" ]; then
+    case "$ACTION" in
+        WINDOWS)
+            echo "[init] $GRUB_REBOOT_BIN windows   # one-shot next-boot override"
+            "$GRUB_REBOOT_BIN" windows || echo "[init] $GRUB_REBOOT_BIN failed (non-fatal — GRUB's persistent default is already windows)"
+            ;;
+        RETRY_DIAGNOSTIC)
+            echo "[init] $GRUB_REBOOT_BIN diagnostic   # one-shot next-boot override"
+            "$GRUB_REBOOT_BIN" diagnostic || echo "[init] $GRUB_REBOOT_BIN failed (non-fatal — falls back to WINDOWS on next boot)"
+            ;;
+    esac
+else
+    echo "[init] grub-reboot/grub2-reboot not found on this system (expected in this test initramfs) — skipping one-shot override, GRUB's persistent default (windows) applies on reboot"
+fi
+
+echo ""
+echo "[init] rebooting now to complete the handoff..."
+
+# `-no-reboot` in scripts/run-qemu.sh makes this a clean process exit
+# under the automated test harness instead of an actual reboot loop.
+if command -v reboot >/dev/null 2>&1; then
+    reboot -f 2>/dev/null || reboot
+else
+    echo "[init] no reboot command available — dropping to a recovery shell instead"
+    exec /bin/sh
+fi
+
+# Not reached on a real system (reboot terminates PID 1's world), but
+# kept as an ultimate fallback so PID 1 never silently exits into a
+# kernel panic if `reboot` returns for some reason.
+exec /bin/sh

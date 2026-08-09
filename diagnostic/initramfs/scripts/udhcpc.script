@@ -1,0 +1,46 @@
+#!/bin/sh
+# Minimal udhcpc "bound"/"renew"/"deconfig" handler for the PLDDS
+# initramfs (Phase 10). udhcpc calls this script with the lease
+# details as environment variables ($ip, $subnet, $router, ...) and an
+# action as $1 — see busybox's udhcpc.txt for the full contract. Only
+# the three actions below are handled; anything else is a silent no-op
+# rather than an error, matching the "never abort the boot" rule
+# everything else in this initramfs follows.
+#
+# Deliberately does nothing beyond configuring this one interface: no
+# /etc/resolv.conf writing beyond nameservers (informational only, the
+# agent talks to the backend by IP/PLDDS_SERVER_URL, not by hostname,
+# in the Phase 10 test setup), no route changes beyond a single default
+# route, nothing persisted to disk.
+
+RESOLV_CONF="/etc/resolv.conf"
+
+case "$1" in
+    deconfig)
+        ip addr flush dev "$interface" 2>/dev/null || true
+        ip link set "$interface" up 2>/dev/null || true
+        ;;
+    renew|bound)
+        ip addr flush dev "$interface" 2>/dev/null || true
+        ip addr add "${ip}/${subnet:-24}" dev "$interface" 2>/dev/null || true
+        ip link set "$interface" up 2>/dev/null || true
+
+        if [ -n "$router" ]; then
+            ip route add default via "$router" dev "$interface" 2>/dev/null || true
+        fi
+
+        if [ -n "$dns" ]; then
+            : > "$RESOLV_CONF" 2>/dev/null || true
+            for ns in $dns; do
+                echo "nameserver $ns" >> "$RESOLV_CONF" 2>/dev/null || true
+            done
+        fi
+        ;;
+    *)
+        # leasefail / nak / other: nothing to configure, init's own
+        # log line (in diagnostic/initramfs/init) already reports the
+        # overall DHCP outcome — this script doesn't need to duplicate it.
+        ;;
+esac
+
+exit 0

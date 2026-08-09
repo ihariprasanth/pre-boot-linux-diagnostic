@@ -1,0 +1,46 @@
+# PLDDS local development stack.
+# Phase 1: service definitions are placeholders only — no working
+# Dockerfiles or app code exist yet. Populated starting Phase 5 (server)
+# and Phase 11 (dashboard).
+
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pldds
+      POSTGRES_PASSWORD: pldds_dev_only_change_me
+      POSTGRES_DB: pldds
+    ports:
+      - "5432:5432"
+    volumes:
+      - pldds_pgdata:/var/lib/postgresql/data
+
+  # server:
+  #   build: ./server
+  #   depends_on:
+  #     - db
+  #   environment:
+  #     DATABASE_URL: postgresql://pldds:pldds_dev_only_change_me@db:5432/pldds
+  #   ports:
+  #     - "8000:8000"
+  #   # Enabled starting Phase 5
+
+  dashboard:
+    build:
+      context: ./dashboard
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    depends_on:
+      - db
+    ports:
+      - "3000:3000"
+    # Enabled starting Phase 11. Talks to the backend at
+    # VITE_API_BASE_URL (baked in at build time, see dashboard/Dockerfile)
+    # — if `server` above gets uncommented, this can switch to
+    # http://server:8000 for container-to-container calls instead.
+
+volumes:
+  pldds_pgdata:
+
